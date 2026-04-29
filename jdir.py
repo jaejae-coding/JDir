@@ -203,6 +203,16 @@ class EntryItem(ListItem):
         self.entry_path = path
         self.kind = kind
         self._display = display
+        self._last_click_time: float = 0.0
+
+    def on_click(self, event) -> None:
+        now = monotonic()
+        if (now - self._last_click_time) < 0.5:
+            event.stop()
+            self._last_click_time = 0.0
+            self.app.activate_item()
+        else:
+            self._last_click_time = now
 
     def compose(self) -> ComposeResult:
         prefix = {
@@ -225,9 +235,6 @@ class EntryListView(ListView):
         Binding("left",  "go_top",     "최상단",    show=False),
     ]
 
-    _last_click_time: float = 0.0
-    _last_click_index: int = -1
-
     def action_activate(self) -> None:
         self.app.activate_item()
 
@@ -242,16 +249,6 @@ class EntryListView(ListView):
             self.app.go_up()
         else:
             self.index = 0
-
-    def on_click(self, event) -> None:
-        now = monotonic()
-        idx = self.index if self.index is not None else -1
-        if (now - self._last_click_time) < 0.5 and idx == self._last_click_index:
-            self.app.activate_item()
-            self._last_click_time = 0.0
-        else:
-            self._last_click_time = now
-            self._last_click_index = idx
 
 
 class JDir(App):

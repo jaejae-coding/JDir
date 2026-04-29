@@ -179,16 +179,6 @@ class JDir(App):
         align: left middle;
         padding: 0 1;
     }
-    #top-bar Button {
-        height: 3;
-        border: none;
-        padding: 1 0;
-    }
-    #top-bar Input {
-        height: 3;
-        border: none;
-        padding: 1 1;
-    }
     #claude-btn {
         width: 14;
         margin-right: 1;

@@ -9,6 +9,7 @@ import string
 import shutil
 import subprocess
 from pathlib import Path
+from time import monotonic
 from typing import Literal
 
 LAUNCH_CWD = Path(os.getcwd())
@@ -65,8 +66,8 @@ from textual import on
 class QuitConfirmScreen(ModalScreen):
     BINDINGS = [
         Binding("escape", "force_quit",   show=False),
-        Binding("left",   "focus_cancel", show=False),
-        Binding("right",  "focus_quit",   show=False),
+        Binding("left",   "focus_quit",   show=False),
+        Binding("right",  "focus_cancel", show=False),
     ]
 
     CSS = """
@@ -87,7 +88,7 @@ class QuitConfirmScreen(ModalScreen):
         width: 1fr;
         content-align: center middle;
     }
-    #quit-btn   { width: 100%; }
+    #quit-btn   { width: 100%; border: tall $error; }
     #cancel-btn { width: 100%; }
     """
 
@@ -122,8 +123,10 @@ class QuitConfirmScreen(ModalScreen):
 
 class ConfirmScreen(ModalScreen):
     BINDINGS = [
-        Binding("escape", "cancel",  "취소", show=True),
-        Binding("enter",  "confirm", "확인", show=True),
+        Binding("escape", "cancel",        "취소", show=True),
+        Binding("enter",  "confirm",       "확인", show=True),
+        Binding("left",   "focus_confirm", show=False),
+        Binding("right",  "focus_cancel",  show=False),
     ]
 
     CSS = """
@@ -146,7 +149,7 @@ class ConfirmScreen(ModalScreen):
         width: 1fr;
         content-align: center middle;
     }
-    #confirm { width: 100%; }
+    #confirm { width: 100%; border: tall $error; }
     #cancel  { width: 100%; }
     """
 
@@ -162,11 +165,20 @@ class ConfirmScreen(ModalScreen):
             id="dialog",
         )
 
+    def on_mount(self) -> None:
+        self.query_one("#confirm").focus()
+
     def action_confirm(self) -> None:
         self.dismiss(True)
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+    def action_focus_confirm(self) -> None:
+        self.query_one("#confirm").focus()
+
+    def action_focus_cancel(self) -> None:
+        self.query_one("#cancel").focus()
 
     @on(Button.Pressed, "#confirm")
     def on_confirm(self) -> None:
@@ -213,6 +225,9 @@ class EntryListView(ListView):
         Binding("left",  "go_top",     "최상단",    show=False),
     ]
 
+    _last_click_time: float = 0.0
+    _last_click_index: int = -1
+
     def action_activate(self) -> None:
         self.app.activate_item()
 
@@ -227,6 +242,16 @@ class EntryListView(ListView):
             self.app.go_up()
         else:
             self.index = 0
+
+    def on_click(self, event) -> None:
+        now = monotonic()
+        idx = self.index if self.index is not None else -1
+        if (now - self._last_click_time) < 0.5 and idx == self._last_click_index:
+            self.app.activate_item()
+            self._last_click_time = 0.0
+        else:
+            self._last_click_time = now
+            self._last_click_index = idx
 
 
 class JDir(App):

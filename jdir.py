@@ -236,6 +236,12 @@ class EntryListView(ListView):
         Binding("left",  "go_top",     "최상단",    show=False),
     ]
 
+    def _on_list_item__child_clicked(self, event) -> None:
+        try:
+            super()._on_list_item__child_clicked(event)
+        except ValueError:
+            pass
+
     def action_activate(self) -> None:
         self.app.activate_item()
 

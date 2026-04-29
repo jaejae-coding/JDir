@@ -9,7 +9,6 @@ import string
 import shutil
 import subprocess
 from pathlib import Path
-from time import monotonic
 from typing import Literal
 
 LAUNCH_CWD = Path(os.getcwd())
@@ -203,18 +202,6 @@ class EntryItem(ListItem):
         self.entry_path = path
         self.kind = kind
         self._display = display
-        self._last_click_time: float = 0.0
-
-    def _on_click(self, event) -> None:
-        now = monotonic()
-        if (now - self._last_click_time) < 0.5:
-            event.stop()
-            self._last_click_time = 0.0
-            self.app.activate_item()
-        else:
-            self._last_click_time = now
-            super()._on_click(event)
-
     def compose(self) -> ComposeResult:
         prefix = {
             'parent': '  ^  ',
@@ -235,12 +222,6 @@ class EntryListView(ListView):
         Binding("right", "enter_item", "하위폴더",  show=False),
         Binding("left",  "go_top",     "최상단",    show=False),
     ]
-
-    def _on_list_item__child_clicked(self, event) -> None:
-        try:
-            super()._on_list_item__child_clicked(event)
-        except ValueError:
-            pass
 
     def action_activate(self) -> None:
         self.app.activate_item()

@@ -181,11 +181,13 @@ class JDir(App):
     }
     #top-bar Button {
         height: 3;
-        content-align: center middle;
+        border: none;
+        padding: 1 2;
     }
     #top-bar Input {
         height: 3;
-        content-align: left middle;
+        border: none;
+        padding: 1 1;
     }
     #claude-btn {
         width: 14;
@@ -253,7 +255,7 @@ class JDir(App):
 
     def compose(self) -> ComposeResult:
         saved = load_saved_start()
-        placeholder = f"비워두면 실행 위치 ({self.launch_cwd})"
+        placeholder = f"현재 지정된 시작 위치: {self.launch_cwd}"
         yield Header(show_clock=False)
         with Horizontal(id="top-bar"):
             yield Button("Claude 실행", id="claude-btn", variant="success")

@@ -180,12 +180,14 @@ class JDir(App):
         padding: 0 1;
     }
     #top-bar Button {
-        height: 1;
+        height: 3;
         border: none;
+        content-align: center middle;
     }
     #top-bar Input {
-        height: 1;
+        height: 3;
         border: none;
+        content-align: left middle;
     }
     #claude-btn {
         width: 14;

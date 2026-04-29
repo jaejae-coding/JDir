@@ -6,8 +6,10 @@ import os
 import json
 import ctypes
 import string
+import shutil
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 LAUNCH_CWD = Path(os.getcwd())
 CONFIG_FILE = Path.home() / ".claude" / "jdir_config.json"
@@ -53,34 +55,103 @@ def clear_saved_start() -> None:
 
 from textual.app import App, ComposeResult
 from textual.widgets import ListView, ListItem, Label, Header, Footer, Input, Button, Static
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Grid
 from textual.binding import Binding
+from textual.screen import ModalScreen
 from textual import on
 
 
-class EntryItem(ListItem):
-    def __init__(self, path: Path | None, display: str, kind: str) -> None:
+class ConfirmScreen(ModalScreen):
+    BINDINGS = [
+        Binding("escape", "cancel",  "취소", show=True),
+        Binding("enter",  "confirm", "확인", show=True),
+    ]
+
+    CSS = """
+    ConfirmScreen {
+        align: center middle;
+    }
+    #dialog {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: 1fr 3;
+        padding: 1 2;
+        width: 60;
+        height: 11;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    #dialog Label {
+        column-span: 2;
+        height: 1fr;
+        width: 1fr;
+        content-align: center middle;
+    }
+    #confirm { width: 100%; }
+    #cancel  { width: 100%; }
+    """
+
+    def __init__(self, message: str) -> None:
         super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Label(self._message),
+            Button("확인", id="confirm", variant="error"),
+            Button("취소", id="cancel"),
+            id="dialog",
+        )
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#confirm")
+    def on_confirm(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#cancel")
+    def on_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class EntryItem(ListItem):
+    def __init__(self, path: Path | None, display: str, kind: str,
+                 selected: bool = False, cut: bool = False) -> None:
+        css_classes = []
+        if kind == 'exec':
+            css_classes.append('exec-item')
+        if selected:
+            css_classes.append('item-selected')
+        if cut:
+            css_classes.append('item-cut')
+        super().__init__(classes=" ".join(css_classes))
         self.entry_path = path
-        self.kind = kind   # 'parent' | 'drive' | 'folder' | 'exec' | 'doc'
+        self.kind = kind
         self._display = display
 
     def compose(self) -> ComposeResult:
         prefix = {
             'parent': '  ^  ',
             'drive':  ' [D] ',
-            'folder': '  >  ',
             'exec':   ' [!] ',
             'doc':    ' [-] ',
-        }.get(self.kind, '     ')
-        yield Label(f"{prefix}{self._display}")
+        }.get(self.kind, '')
+
+        if self.kind == 'folder':
+            yield Label(f"  [{self._display}]")
+        else:
+            yield Label(f"{prefix}{self._display}")
 
 
 class EntryListView(ListView):
     BINDINGS = [
-        Binding("enter", "activate",    "열기/이동", show=False),
-        Binding("right", "enter_item",  "하위폴더",  show=False),
-        Binding("left",  "go_top",      "최상단",    show=False),
+        Binding("enter", "activate",   "열기/이동", show=False),
+        Binding("right", "enter_item", "하위폴더",  show=False),
+        Binding("left",  "go_top",     "최상단",    show=False),
     ]
 
     def action_activate(self) -> None:
@@ -97,7 +168,7 @@ class EntryListView(ListView):
 
 class JDir(App):
     TITLE = "JDir"
-    SUB_TITLE = "v0.1  ·  by JaeJae"
+    SUB_TITLE = "v0.2 (20260429)  ·  by JaeJae"
 
     CSS = """
     #top-bar {
@@ -107,20 +178,18 @@ class JDir(App):
         align: left middle;
         padding: 0 1;
     }
-    #start-label {
-        width: auto;
-        color: $text-muted;
-        padding: 0 1;
+    #top-bar Button, #top-bar Input {
+        height: 3;
+    }
+    #claude-btn {
+        width: 14;
+        margin-right: 1;
     }
     #start-input {
         width: 1fr;
     }
     #move-btn {
-        width: 6;
-        margin-left: 1;
-    }
-    #claude-btn {
-        width: 14;
+        width: 5;
         margin-left: 1;
     }
     #current-path-bar {
@@ -134,11 +203,34 @@ class JDir(App):
     EntryListView {
         height: 1fr;
     }
+    #clipboard-bar {
+        height: 2;
+        padding: 0 2;
+        background: $surface;
+        border-top: solid $primary;
+        color: $text-muted;
+        content-align: left middle;
+    }
+    EntryItem.exec-item Label {
+        color: $warning;
+    }
+    EntryItem.item-selected {
+        background: $accent 25%;
+    }
+    EntryItem.item-cut Label {
+        color: $text-muted;
+        text-style: dim;
+    }
     """
 
     BINDINGS = [
-        Binding("tab",    "cycle_focus",       "탭 이동",     show=True,  priority=True),
-        Binding("ctrl+r", "focus_start_input", "시작폴더 변경"),
+        Binding("tab",    "cycle_focus",       "탭이동",   show=True,  priority=True),
+        Binding("ctrl+a", "select_all",        "모두선택", show=True,  priority=True),
+        Binding("ctrl+c", "copy_items",        "복사",     show=True,  priority=True),
+        Binding("ctrl+x", "cut_items",         "잘라내기", show=True,  priority=True),
+        Binding("ctrl+v", "paste_items",       "붙여넣기", show=True,  priority=True),
+        Binding("ctrl+d", "delete_items",      "삭제",     show=True,  priority=True),
+        Binding("ctrl+r", "focus_start_input", "시작폴더", show=False),
         Binding("escape", "app.quit",          "종료"),
     ]
 
@@ -149,23 +241,47 @@ class JDir(App):
         self._current_path: Path | None = (
             Path(saved) if saved and Path(saved).is_dir() else launch_cwd
         )
+        self._selected_paths: set[Path] = set()
+        self._clipboard_paths: list[Path] = []
+        self._clipboard_mode: Literal['copy', 'cut'] | None = None
 
     def compose(self) -> ComposeResult:
         saved = load_saved_start()
         placeholder = f"비워두면 실행 위치 ({self.launch_cwd})"
         yield Header(show_clock=False)
         with Horizontal(id="top-bar"):
-            yield Label("시작:", id="start-label")
+            yield Button("Claude 실행", id="claude-btn", variant="success")
             yield Input(value=saved or "", id="start-input", placeholder=placeholder)
             yield Button("이동", id="move-btn", variant="primary")
-            yield Button("Claude 실행", id="claude-btn", variant="success")
         yield Static("", id="current-path-bar")
         yield EntryListView(id="entry-list")
+        yield Static("클립보드: (없음)", id="clipboard-bar")
         yield Footer()
 
     def on_mount(self) -> None:
         self._refresh_list(self._current_path)
         self.query_one(EntryListView).focus()
+
+    def _get_active_paths(self) -> list[Path]:
+        """선택된 항목 있으면 선택 목록, 없으면 현재 커서 항목."""
+        if self._selected_paths:
+            return list(self._selected_paths)
+        lv = self.query_one(EntryListView)
+        item = lv.highlighted_child
+        if isinstance(item, EntryItem) and item.entry_path and item.kind not in ('parent', 'drive'):
+            return [item.entry_path]
+        return []
+
+    def _update_clipboard_bar(self) -> None:
+        bar = self.query_one("#clipboard-bar", Static)
+        if not self._clipboard_paths:
+            bar.update("클립보드: (없음)")
+            return
+        mode_str = "복사" if self._clipboard_mode == 'copy' else "잘라내기"
+        names = ", ".join(p.name for p in self._clipboard_paths[:3])
+        if len(self._clipboard_paths) > 3:
+            names += f" 외 {len(self._clipboard_paths) - 3}개"
+        bar.update(f"클립보드 [{mode_str}]: {names}")
 
     def _refresh_list(self, path: Path | None, select: Path | None = None) -> None:
         lv = self.query_one(EntryListView)
@@ -173,6 +289,7 @@ class JDir(App):
         lv.clear()
 
         entries_meta: list[tuple[Path | None, str]] = []
+        cut_set = set(self._clipboard_paths) if self._clipboard_mode == 'cut' else set()
 
         if path is None:
             path_bar.update("  [내 PC]")
@@ -187,36 +304,26 @@ class JDir(App):
                 lv.append(EntryItem(path.parent, parent_label, 'parent'))
                 entries_meta.append((path.parent, 'parent'))
             else:
-                # 드라이브 루트 → 가상 루트(내 PC)로 이동
                 lv.append(EntryItem(None, ".. (내 PC)", 'parent'))
                 entries_meta.append((None, 'parent'))
 
             try:
                 raw = list(path.iterdir())
-            except PermissionError:
+            except (PermissionError, OSError):
                 raw = []
 
-            folders = sorted(
-                [p for p in raw if p.is_dir()],
-                key=lambda x: x.name.lower()
-            )
-            execs = sorted(
-                [p for p in raw if p.is_file() and p.suffix.lower() in EXEC_EXTENSIONS],
-                key=lambda x: x.name.lower()
-            )
-            docs = sorted(
-                [p for p in raw if p.is_file() and p.suffix.lower() in DOC_EXTENSIONS],
-                key=lambda x: x.name.lower()
-            )
+            folders = sorted([p for p in raw if p.is_dir()],        key=lambda x: x.name.lower())
+            execs   = sorted([p for p in raw if p.is_file() and p.suffix.lower() in EXEC_EXTENSIONS], key=lambda x: x.name.lower())
+            docs    = sorted([p for p in raw if p.is_file() and p.suffix.lower() in DOC_EXTENSIONS],  key=lambda x: x.name.lower())
 
             for p in folders:
-                lv.append(EntryItem(p, p.name, 'folder'))
+                lv.append(EntryItem(p, p.name, 'folder', p in self._selected_paths, p in cut_set))
                 entries_meta.append((p, 'folder'))
             for p in execs:
-                lv.append(EntryItem(p, p.name, 'exec'))
+                lv.append(EntryItem(p, p.name, 'exec', p in self._selected_paths, p in cut_set))
                 entries_meta.append((p, 'exec'))
             for p in docs:
-                lv.append(EntryItem(p, p.name, 'doc'))
+                lv.append(EntryItem(p, p.name, 'doc', p in self._selected_paths, p in cut_set))
                 entries_meta.append((p, 'doc'))
 
         target_index = 0
@@ -230,6 +337,7 @@ class JDir(App):
         self.call_after_refresh(lambda idx=target_index: setattr(lv, "index", idx))
 
     def navigate_to(self, path: Path | None) -> None:
+        self._selected_paths.clear()
         self._current_path = path
         self._refresh_list(path)
 
@@ -239,11 +347,12 @@ class JDir(App):
         parent = self._current_path.parent
         if parent != self._current_path:
             prev = self._current_path
+            self._selected_paths.clear()
             self._current_path = parent
             self._refresh_list(parent, select=prev)
         else:
-            # 드라이브 루트에서 가상 루트로
             prev = self._current_path
+            self._selected_paths.clear()
             self._current_path = None
             self._refresh_list(None, select=prev)
 
@@ -261,6 +370,102 @@ class JDir(App):
                 os.startfile(str(item.entry_path))
             except Exception as e:
                 self.notify(f"열기 실패: {e}", severity="error")
+
+    def action_select_all(self) -> None:
+        if self._current_path is None:
+            return
+        lv = self.query_one(EntryListView)
+        self._selected_paths.clear()
+        for child in lv.children:
+            if isinstance(child, EntryItem) and child.entry_path and child.kind not in ('parent', 'drive'):
+                self._selected_paths.add(child.entry_path)
+        self._refresh_list(self._current_path)
+        self.notify(f"{len(self._selected_paths)}개 선택됨", timeout=1)
+
+    def action_copy_items(self) -> None:
+        paths = self._get_active_paths()
+        if not paths:
+            return
+        self._clipboard_paths = paths
+        self._clipboard_mode = 'copy'
+        self._update_clipboard_bar()
+        self._refresh_list(self._current_path)
+        self.notify(f"{len(paths)}개 복사 준비", timeout=1)
+
+    def action_cut_items(self) -> None:
+        paths = self._get_active_paths()
+        if not paths:
+            return
+        self._clipboard_paths = paths
+        self._clipboard_mode = 'cut'
+        self._update_clipboard_bar()
+        self._refresh_list(self._current_path)
+        self.notify(f"{len(paths)}개 잘라내기 준비", timeout=1)
+
+    def action_paste_items(self) -> None:
+        if not self._clipboard_paths or self._current_path is None:
+            return
+        errors = []
+        for src in self._clipboard_paths:
+            dst = self._current_path / src.name
+            try:
+                if dst.exists():
+                    dst = self._current_path / (src.stem + "_copy" + src.suffix)
+                if self._clipboard_mode == 'copy':
+                    if src.is_dir():
+                        shutil.copytree(str(src), str(dst))
+                    else:
+                        shutil.copy2(str(src), str(dst))
+                else:
+                    shutil.move(str(src), str(dst))
+            except Exception as e:
+                errors.append(f"{src.name}: {e}")
+
+        if self._clipboard_mode == 'cut':
+            self._clipboard_paths = []
+            self._clipboard_mode = None
+            self._update_clipboard_bar()
+
+        self._selected_paths.clear()
+        self._refresh_list(self._current_path)
+
+        if errors:
+            self.notify("오류: " + " / ".join(errors), severity="error", timeout=5)
+        else:
+            self.notify("붙여넣기 완료", timeout=2)
+
+    def action_delete_items(self) -> None:
+        paths = self._get_active_paths()
+        if not paths:
+            return
+        names = ", ".join(p.name for p in paths[:2])
+        if len(paths) > 2:
+            names += f" 외 {len(paths) - 2}개"
+
+        def do_delete(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            errors = []
+            for p in paths:
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(str(p))
+                    else:
+                        os.remove(str(p))
+                except Exception as e:
+                    errors.append(f"{p.name}: {e}")
+            self._selected_paths -= set(paths)
+            self._clipboard_paths = [cp for cp in self._clipboard_paths if cp not in paths]
+            if not self._clipboard_paths:
+                self._clipboard_mode = None
+            self._update_clipboard_bar()
+            self._refresh_list(self._current_path)
+            if errors:
+                self.notify("삭제 오류: " + " / ".join(errors), severity="error", timeout=5)
+            else:
+                self.notify(f"{len(paths)}개 삭제 완료", timeout=2)
+
+        self.push_screen(ConfirmScreen(f"삭제하시겠습니까?\n{names}"), do_delete)
 
     def action_cycle_focus(self) -> None:
         focused = self.focused
@@ -289,6 +494,7 @@ class JDir(App):
         else:
             clear_saved_start()
             self._current_path = self.launch_cwd
+        self._selected_paths.clear()
         self._refresh_list(self._current_path)
         self.query_one(EntryListView).focus()
         self.notify(f"이동: {self._current_path.name or str(self._current_path)}", timeout=2)

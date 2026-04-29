@@ -54,12 +54,44 @@ def clear_saved_start() -> None:
 
 
 from rich.markup import escape as rich_escape
+from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.widget import Widget
 from textual.widgets import ListView, ListItem, Label, Header, Footer, Input, Button, Static
 from textual.containers import Horizontal, Grid
 from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual import on
+
+
+class ClaudeButton(Widget):
+    can_focus = True
+    BINDINGS = [Binding("enter", "activate", show=False)]
+
+    DEFAULT_CSS = """
+    ClaudeButton {
+        width: 17;
+        height: 3;
+        content-align: center middle;
+        background: $success;
+        border: tall $success;
+        margin-right: 1;
+    }
+    ClaudeButton:hover { background: $success-darken-1; }
+    ClaudeButton:focus { border: tall $accent; }
+    """
+
+    def render(self) -> Text:
+        t = Text()
+        t.append("✳ ", style="bold rgb(217,119,87)")
+        t.append("Claude 실행")
+        return t
+
+    def action_activate(self) -> None:
+        self.app._launch_claude()
+
+    def on_click(self, event) -> None:
+        self.app._launch_claude()
 
 
 class QuitConfirmScreen(ModalScreen):
@@ -251,10 +283,6 @@ class JDir(App):
         align: left middle;
         padding: 0 1;
     }
-    #claude-btn {
-        width: 14;
-        margin-right: 1;
-    }
     #start-input {
         width: 1fr;
     }
@@ -322,7 +350,7 @@ class JDir(App):
         placeholder = f"현재 지정된 시작 위치: {self.launch_cwd}"
         yield Header(show_clock=False)
         with Horizontal(id="top-bar"):
-            yield Button("Claude 실행", id="claude-btn", variant="success")
+            yield ClaudeButton(id="claude-btn")
             yield Input(value=saved or "", id="start-input", placeholder=placeholder)
             yield Button("이동", id="move-btn", variant="primary")
         yield Static("", id="current-path-bar")
@@ -607,10 +635,6 @@ class JDir(App):
     @on(Button.Pressed, "#move-btn")
     def on_move_btn(self) -> None:
         self._apply_start()
-
-    @on(Button.Pressed, "#claude-btn")
-    def on_claude_btn(self) -> None:
-        self._launch_claude()
 
     def action_focus_start_input(self) -> None:
         self.query_one("#start-input", Input).focus()

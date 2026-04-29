@@ -12,7 +12,7 @@ from pathlib import Path
 LAUNCH_CWD = Path(os.getcwd())
 CONFIG_FILE = Path.home() / ".claude" / "jdir_config.json"
 
-EXEC_EXTENSIONS = frozenset({'.exe', '.bat', '.cmd', '.msi', '.com', '.ps1'})
+EXEC_EXTENSIONS = frozenset({'.exe', '.bat', '.cmd', '.msi', '.com', '.ps1', '.py'})
 DOC_EXTENSIONS  = frozenset({'.doc', '.docx', '.ppt', '.pptx', '.txt', '.csv', '.md'})
 
 _FOCUS_CYCLE = ["entry-list", "claude-btn", "start-input", "move-btn"]

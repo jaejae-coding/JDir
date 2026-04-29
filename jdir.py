@@ -62,6 +62,64 @@ from textual.screen import ModalScreen
 from textual import on
 
 
+class QuitConfirmScreen(ModalScreen):
+    BINDINGS = [
+        Binding("escape", "force_quit",   show=False),
+        Binding("left",   "focus_cancel", show=False),
+        Binding("right",  "focus_quit",   show=False),
+    ]
+
+    CSS = """
+    QuitConfirmScreen { align: center middle; }
+    #quit-dialog {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: 1fr 3;
+        padding: 1 2;
+        width: 40;
+        height: 11;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    #quit-dialog Label {
+        column-span: 2;
+        height: 1fr;
+        width: 1fr;
+        content-align: center middle;
+    }
+    #quit-btn   { width: 100%; }
+    #cancel-btn { width: 100%; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Label("JDir을 종료하시겠습니까?"),
+            Button("종료", id="quit-btn", variant="error"),
+            Button("취소", id="cancel-btn"),
+            id="quit-dialog",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#quit-btn").focus()
+
+    def action_force_quit(self) -> None:
+        self.app.exit()
+
+    def action_focus_cancel(self) -> None:
+        self.query_one("#cancel-btn").focus()
+
+    def action_focus_quit(self) -> None:
+        self.query_one("#quit-btn").focus()
+
+    @on(Button.Pressed, "#quit-btn")
+    def do_quit(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#cancel-btn")
+    def do_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class ConfirmScreen(ModalScreen):
     BINDINGS = [
         Binding("escape", "cancel",  "취소", show=True),
@@ -164,12 +222,16 @@ class EntryListView(ListView):
             self.app.navigate_to(item.entry_path)
 
     def action_go_top(self) -> None:
-        self.index = 0
+        item = self.highlighted_child
+        if isinstance(item, EntryItem) and item.kind == 'parent':
+            self.app.go_up()
+        else:
+            self.index = 0
 
 
 class JDir(App):
     TITLE = "JDir"
-    SUB_TITLE = "v0.2 (20260429)  ·  by JaeJae"
+    SUB_TITLE = "v0.3 (20260429)  ·  by JaeJae"
 
     CSS = """
     #top-bar {
@@ -229,7 +291,7 @@ class JDir(App):
         Binding("ctrl+v", "paste_items",       "붙여넣기", show=True,  priority=True),
         Binding("ctrl+d", "delete_items",      "삭제",     show=True,  priority=True),
         Binding("ctrl+r", "focus_start_input", "시작폴더", show=False),
-        Binding("escape", "app.quit",          "종료"),
+        Binding("escape", "quit_confirm",       "종료"),
     ]
 
     def __init__(self, launch_cwd: Path) -> None:
@@ -242,6 +304,8 @@ class JDir(App):
         self._selected_paths: set[Path] = set()
         self._clipboard_paths: list[Path] = []
         self._clipboard_mode: Literal['copy', 'cut'] | None = None
+        self._countdown_handle = None
+        self._clipboard_countdown: int = 0
 
     def compose(self) -> ComposeResult:
         saved = load_saved_start()
@@ -270,6 +334,28 @@ class JDir(App):
             return [item.entry_path]
         return []
 
+    def _cancel_countdown(self) -> None:
+        if self._countdown_handle is not None:
+            self._countdown_handle.stop()
+            self._countdown_handle = None
+        self._clipboard_countdown = 0
+
+    def _start_clipboard_countdown(self) -> None:
+        self._cancel_countdown()
+        self._clipboard_countdown = 10
+        self._update_clipboard_bar()
+        self._countdown_handle = self.set_interval(1.0, self._tick_countdown)
+
+    def _tick_countdown(self) -> None:
+        self._clipboard_countdown -= 1
+        if self._clipboard_countdown <= 0:
+            self._cancel_countdown()
+            self._clipboard_paths = []
+            self._clipboard_mode = None
+            self._update_clipboard_bar()
+        else:
+            self._update_clipboard_bar()
+
     def _update_clipboard_bar(self) -> None:
         bar = self.query_one("#clipboard-bar", Static)
         if not self._clipboard_paths:
@@ -279,7 +365,8 @@ class JDir(App):
         names = ", ".join(p.name for p in self._clipboard_paths[:3])
         if len(self._clipboard_paths) > 3:
             names += f" 외 {len(self._clipboard_paths) - 3}개"
-        bar.update(f"클립보드 [{mode_str}]: {names}")
+        countdown_str = f" ({self._clipboard_countdown}초 후 삭제)" if self._clipboard_countdown > 0 else ""
+        bar.update(f"클립보드 [{mode_str}]: {names}{countdown_str}")
 
     def _refresh_list(self, path: Path | None, select: Path | None = None) -> None:
         lv = self.query_one(EntryListView)
@@ -384,6 +471,7 @@ class JDir(App):
         paths = self._get_active_paths()
         if not paths:
             return
+        self._cancel_countdown()
         self._clipboard_paths = paths
         self._clipboard_mode = 'copy'
         self._update_clipboard_bar()
@@ -394,6 +482,7 @@ class JDir(App):
         paths = self._get_active_paths()
         if not paths:
             return
+        self._cancel_countdown()
         self._clipboard_paths = paths
         self._clipboard_mode = 'cut'
         self._update_clipboard_bar()
@@ -422,7 +511,10 @@ class JDir(App):
         if self._clipboard_mode == 'cut':
             self._clipboard_paths = []
             self._clipboard_mode = None
+            self._cancel_countdown()
             self._update_clipboard_bar()
+        else:
+            self._start_clipboard_countdown()
 
         self._selected_paths.clear()
         self._refresh_list(self._current_path)
@@ -456,6 +548,7 @@ class JDir(App):
             self._clipboard_paths = [cp for cp in self._clipboard_paths if cp not in paths]
             if not self._clipboard_paths:
                 self._clipboard_mode = None
+                self._cancel_countdown()
             self._update_clipboard_bar()
             self._refresh_list(self._current_path)
             if errors:
@@ -511,6 +604,12 @@ class JDir(App):
 
     def action_focus_start_input(self) -> None:
         self.query_one("#start-input", Input).focus()
+
+    def action_quit_confirm(self) -> None:
+        def handle(confirmed: bool) -> None:
+            if confirmed:
+                self.exit()
+        self.push_screen(QuitConfirmScreen(), handle)
 
 
 if __name__ == "__main__":

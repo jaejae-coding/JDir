@@ -288,7 +288,7 @@ class JDir(App):
         Binding("ctrl+a", "select_all",        "모두선택", show=True,  priority=True),
         Binding("ctrl+c", "copy_items",        "복사",     show=True,  priority=True),
         Binding("ctrl+x", "cut_items",         "잘라내기", show=True,  priority=True),
-        Binding("ctrl+v", "paste_items",       "붙여넣기", show=True,  priority=True),
+        Binding("ctrl+p", "paste_items",       "붙여넣기", show=True,  priority=True),
         Binding("ctrl+d", "delete_items",      "삭제",     show=True,  priority=True),
         Binding("ctrl+r", "focus_start_input", "시작폴더", show=False),
         Binding("escape", "quit_confirm",       "종료"),
@@ -606,10 +606,18 @@ class JDir(App):
         self.query_one("#start-input", Input).focus()
 
     def action_quit_confirm(self) -> None:
-        def handle(confirmed: bool) -> None:
-            if confirmed:
-                self.exit()
-        self.push_screen(QuitConfirmScreen(), handle)
+        if self._clipboard_paths:
+            self._cancel_countdown()
+            self._clipboard_paths = []
+            self._clipboard_mode = None
+            self._update_clipboard_bar()
+            self._refresh_list(self._current_path)
+            self.notify("클립보드를 비웠습니다.", timeout=1)
+        else:
+            def handle(confirmed: bool) -> None:
+                if confirmed:
+                    self.exit()
+            self.push_screen(QuitConfirmScreen(), handle)
 
 
 if __name__ == "__main__":

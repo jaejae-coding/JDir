@@ -53,6 +53,7 @@ def clear_saved_start() -> None:
         CONFIG_FILE.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
 
 
+from rich.markup import escape as rich_escape
 from textual.app import App, ComposeResult
 from textual.widgets import ListView, ListItem, Label, Header, Footer, Input, Button, Static
 from textual.containers import Horizontal, Grid
@@ -142,9 +143,9 @@ class EntryItem(ListItem):
         }.get(self.kind, '')
 
         if self.kind == 'folder':
-            yield Label(f"  [{self._display}]")
+            yield Label(f"  >  \\[{rich_escape(self._display)}]")
         else:
-            yield Label(f"{prefix}{self._display}")
+            yield Label(f"{prefix}{rich_escape(self._display)}")
 
 
 class EntryListView(ListView):
@@ -178,8 +179,13 @@ class JDir(App):
         align: left middle;
         padding: 0 1;
     }
-    #top-bar Button, #top-bar Input {
+    #top-bar Button {
         height: 3;
+        content-align: center middle;
+    }
+    #top-bar Input {
+        height: 3;
+        content-align: left middle;
     }
     #claude-btn {
         width: 14;
@@ -204,7 +210,7 @@ class JDir(App):
         height: 1fr;
     }
     #clipboard-bar {
-        height: 2;
+        height: 3;
         padding: 0 2;
         background: $surface;
         border-top: solid $primary;

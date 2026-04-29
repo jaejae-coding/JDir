@@ -205,7 +205,7 @@ class EntryItem(ListItem):
         self._display = display
         self._last_click_time: float = 0.0
 
-    def on_click(self, event) -> None:
+    def _on_click(self, event) -> None:
         now = monotonic()
         if (now - self._last_click_time) < 0.5:
             event.stop()
@@ -213,6 +213,7 @@ class EntryItem(ListItem):
             self.app.activate_item()
         else:
             self._last_click_time = now
+            super()._on_click(event)
 
     def compose(self) -> ComposeResult:
         prefix = {

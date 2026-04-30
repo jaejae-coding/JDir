@@ -23,6 +23,31 @@ _FOCUS_CYCLE = ["entry-list", "prompt-input", "claude-btn", "start-input", "move
 
 _CREATE_NEW_CONSOLE = 0x00000010
 
+_FOOTER_ITEMS = [
+    ("Tab",    "탭이동",   "cycle_focus"),
+    ("Ctrl+A", "모두선택", "select_all"),
+    ("Ctrl+C", "복사",    "copy_items"),
+    ("Ctrl+X", "잘라내기", "cut_items"),
+    ("Ctrl+P", "붙여넣기", "paste_items"),
+    ("Ctrl+D", "삭제",    "delete_items"),
+    ("Ctrl+Z", "실행취소", "undo"),
+    ("F2",     "이름변경", "rename"),
+    ("Ctrl+N", "새폴더",   "new_folder"),
+    ("F5",     "새로고침", "refresh"),
+    ("Alt+←",  "뒤로",    "nav_back"),
+    ("Alt+→",  "앞으로",  "nav_forward"),
+    ("ESC",    "종료",    "quit_confirm"),
+]
+
+def _char_width(c: str) -> int:
+    cp = ord(c)
+    if 0xAC00 <= cp <= 0xD7A3 or 0x1100 <= cp <= 0x11FF or 0x3000 <= cp <= 0x9FFF:
+        return 2
+    return 1
+
+def _str_width(s: str) -> int:
+    return sum(_char_width(c) for c in s)
+
 def _is_hidden_or_system(path: Path) -> bool:
     try:
         attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
@@ -71,7 +96,8 @@ def clear_saved_start() -> None:
 
 from rich.markup import escape as rich_escape
 from textual.app import App, ComposeResult
-from textual.widgets import ListView, ListItem, Label, Header, Footer, Input, Button, Static, Checkbox
+from textual.widget import Widget
+from textual.widgets import ListView, ListItem, Label, Header, Input, Button, Static, Checkbox
 from textual.containers import Horizontal, Grid
 from textual.binding import Binding
 from textual.screen import ModalScreen
@@ -337,9 +363,59 @@ class EntryListView(ListView):
         self.app.shift_select(-1)
 
 
+class FooterKey(Static):
+    def __init__(self, key: str, desc: str, action: str) -> None:
+        super().__init__(f"[bold]{key}[/bold] {desc}")
+        self._action_name = action
+
+    def on_click(self) -> None:
+        fn = getattr(self.app, f"action_{self._action_name}", None)
+        if callable(fn):
+            fn()
+        if not isinstance(self.app.screen, ModalScreen):
+            try:
+                self.app.query_one("#entry-list").focus()
+            except Exception:
+                pass
+
+
+class FooterBar(Widget):
+    def on_mount(self) -> None:
+        self.call_after_refresh(lambda: self._rebuild(self.size.width))
+
+    def on_resize(self, event) -> None:
+        self._rebuild(event.size.width)
+
+    def _rebuild(self, width: int) -> None:
+        if width == 0:
+            return
+        usable = max(width - 2, 10)
+        lines: list[list[tuple]] = []
+        current_line: list[tuple] = []
+        current_w = 0
+        for key, desc, action in _FOOTER_ITEMS:
+            item_w = _str_width(f"{key} {desc}") + 2  # +2 for padding: 0 1
+            needed = current_w + item_w
+            if current_line and needed > usable:
+                lines.append(current_line)
+                current_line = [(key, desc, action)]
+                current_w = item_w
+            else:
+                current_line.append((key, desc, action))
+                current_w = needed
+        if current_line:
+            lines.append(current_line)
+        self.remove_children()
+        for line_items in lines:
+            row = Horizontal(classes="footer-row")
+            self.mount(row)
+            for key, desc, action in line_items:
+                row.mount(FooterKey(key, desc, action))
+
+
 class JDir(App):
     TITLE = "JDir"
-    SUB_TITLE = "v0.6 (20260430)  ·  by JaeJae"
+    SUB_TITLE = "v0.7 (20260430)  ·  by JaeJae"
 
     CSS = """
     #top-bar {
@@ -396,8 +472,31 @@ class JDir(App):
         background: $panel;
         text-style: bold;
     }
-    Footer {
-        height: 2;
+    #too-small-msg {
+        display: none;
+        height: 1fr;
+        content-align: center middle;
+        color: $warning;
+    }
+    #custom-footer {
+        background: $panel;
+        height: auto;
+        border-top: solid $primary;
+    }
+    .footer-row {
+        height: 1;
+        background: $panel;
+    }
+    FooterKey {
+        padding: 0 1;
+        height: 1;
+        width: auto;
+        color: $text-muted;
+        background: $panel;
+    }
+    FooterKey:hover {
+        background: $accent 25%;
+        color: $text;
     }
     EntryListView {
         height: 1fr;
@@ -479,12 +578,27 @@ class JDir(App):
         with Horizontal(id="filter-bar"):
             yield Checkbox("숨김파일 표시", id="show-hidden-cb", value=False)
             yield Checkbox("임시파일 표시", id="show-temp-cb", value=False)
-        yield Footer()
+        yield Static("터미널 높이를 늘려주세요. (최소 20줄 필요)", id="too-small-msg")
+        yield FooterBar(id="custom-footer")
+
+    _MIN_HEIGHT = 20
 
     def on_mount(self) -> None:
         self._push_nav(self._current_path)
         self._refresh_list(self._current_path)
         self.query_one(EntryListView).focus()
+
+    def on_resize(self, event) -> None:
+        too_small = event.size.height < self._MIN_HEIGHT
+        for wid in ("top-bar", "prompt-bar", "entry-list", "clipboard-bar", "filter-bar"):
+            try:
+                self.query_one(f"#{wid}").display = not too_small
+            except Exception:
+                pass
+        try:
+            self.query_one("#too-small-msg").display = too_small
+        except Exception:
+            pass
 
     def _get_active_paths(self) -> list[Path]:
         """선택된 항목 있으면 선택 목록, 없으면 현재 커서 항목."""

@@ -188,10 +188,71 @@ class ConfirmScreen(ModalScreen):
         self.dismiss(False)
 
 
+class InputScreen(ModalScreen):
+    BINDINGS = [Binding("escape", "cancel_input", show=False)]
+
+    CSS = """
+    InputScreen { align: center middle; }
+    #input-dialog {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: 1fr 3 3;
+        padding: 1 2;
+        width: 52;
+        height: 13;
+        border: thick $background 80%;
+        background: $surface;
+    }
+    #input-dialog Label {
+        column-span: 2;
+        height: 1fr;
+        width: 1fr;
+        content-align: center middle;
+    }
+    #input-field { column-span: 2; }
+    #input-ok     { width: 100%; }
+    #input-cancel { width: 100%; }
+    """
+
+    def __init__(self, title: str, default: str = "") -> None:
+        super().__init__()
+        self._title = title
+        self._default = default
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Label(self._title),
+            Input(value=self._default, id="input-field"),
+            Button("확인", id="input-ok", variant="primary"),
+            Button("취소", id="input-cancel"),
+            id="input-dialog",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#input-field", Input).focus()
+
+    @on(Input.Submitted, "#input-field")
+    def on_submitted(self) -> None:
+        self.dismiss(self.query_one("#input-field", Input).value.strip())
+
+    @on(Button.Pressed, "#input-ok")
+    def on_ok(self) -> None:
+        self.dismiss(self.query_one("#input-field", Input).value.strip())
+
+    @on(Button.Pressed, "#input-cancel")
+    def on_cancel_btn(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel_input(self) -> None:
+        self.dismiss(None)
+
+
 class EntryItem(ListItem):
     def __init__(self, path: Path | None, display: str, kind: str,
                  selected: bool = False, cut: bool = False) -> None:
         css_classes = []
+        if kind == 'folder':
+            css_classes.append('folder-item')
         if kind == 'exec':
             css_classes.append('exec-item')
         if selected:
@@ -208,6 +269,7 @@ class EntryItem(ListItem):
             'drive':  ' [D] ',
             'exec':   ' [!] ',
             'doc':    ' [-] ',
+            'file':   '     ',
         }.get(self.kind, '')
 
         if self.kind == 'folder':
@@ -261,7 +323,7 @@ class EntryListView(ListView):
 
 class JDir(App):
     TITLE = "JDir"
-    SUB_TITLE = "v0.4 (20260430)  ·  by JaeJae"
+    SUB_TITLE = "v0.5 (20260430)  ·  by JaeJae"
 
     CSS = """
     #top-bar {
@@ -301,6 +363,9 @@ class JDir(App):
         color: $text-muted;
         content-align: left middle;
     }
+    EntryItem.folder-item Label {
+        color: $success;
+    }
     EntryItem.exec-item Label {
         color: $warning;
     }
@@ -321,6 +386,8 @@ class JDir(App):
         Binding("ctrl+p",    "paste_items",       "붙여넣기", show=True,  priority=True),
         Binding("ctrl+d",    "delete_items",      "삭제",     show=True,  priority=True),
         Binding("ctrl+z",    "undo",              "취소",     show=True,  priority=True),
+        Binding("f2",        "rename",            "이름변경", show=True),
+        Binding("ctrl+n",    "new_folder",        "새폴더",   show=True),
         Binding("alt+left",  "nav_back",          "뒤로",     show=True),
         Binding("alt+right", "nav_forward",       "앞으로",   show=True),
         Binding("ctrl+r",    "focus_start_input", "시작폴더", show=False),
@@ -451,9 +518,12 @@ class JDir(App):
             except (PermissionError, OSError):
                 raw = []
 
-            folders = sorted([p for p in raw if p.is_dir()],        key=lambda x: x.name.lower())
+            folders = sorted([p for p in raw if p.is_dir()], key=lambda x: x.name.lower())
             execs   = sorted([p for p in raw if p.is_file() and p.suffix.lower() in EXEC_EXTENSIONS], key=lambda x: x.name.lower())
             docs    = sorted([p for p in raw if p.is_file() and p.suffix.lower() in DOC_EXTENSIONS],  key=lambda x: x.name.lower())
+            others  = sorted([p for p in raw if p.is_file()
+                               and p.suffix.lower() not in EXEC_EXTENSIONS
+                               and p.suffix.lower() not in DOC_EXTENSIONS], key=lambda x: x.name.lower())
 
             for p in folders:
                 lv.append(EntryItem(p, p.name, 'folder', p in self._selected_paths, p in cut_set))
@@ -464,6 +534,9 @@ class JDir(App):
             for p in docs:
                 lv.append(EntryItem(p, p.name, 'doc', p in self._selected_paths, p in cut_set))
                 entries_meta.append((p, 'doc'))
+            for p in others:
+                lv.append(EntryItem(p, p.name, 'file', p in self._selected_paths, p in cut_set))
+                entries_meta.append((p, 'file'))
 
         target_index = 0
         if select is not None:
@@ -751,6 +824,50 @@ class JDir(App):
                 self.notify(f"{len(paths)}개 삭제 완료", timeout=2)
 
         self.push_screen(ConfirmScreen(f"삭제하시겠습니까?\n{names}"), do_delete)
+
+    def action_rename(self) -> None:
+        lv = self.query_one(EntryListView)
+        item = lv.highlighted_child
+        if not isinstance(item, EntryItem) or not item.entry_path or item.kind in ('parent', 'drive'):
+            return
+        old_path = item.entry_path
+
+        def do_rename(new_name: str | None) -> None:
+            if not new_name or new_name == old_path.name:
+                return
+            new_path = old_path.parent / new_name
+            if new_path.exists() and new_name.lower() != old_path.name.lower():
+                self.notify(f"이미 존재합니다: {new_name}", severity="error")
+                return
+            try:
+                old_path.rename(new_path)
+                self._refresh_list(self._current_path, select=new_path)
+                self.notify("이름 변경 완료", timeout=2)
+            except Exception as e:
+                self.notify(f"이름 변경 오류: {e}", severity="error")
+
+        self.push_screen(InputScreen("이름 변경", old_path.name), do_rename)
+
+    def action_new_folder(self) -> None:
+        if self._current_path is None:
+            self.notify("드라이브를 먼저 선택하세요.", severity="warning")
+            return
+
+        def do_create(name: str | None) -> None:
+            if not name:
+                return
+            new_path = self._current_path / name
+            if new_path.exists():
+                self.notify(f"이미 존재합니다: {name}", severity="error")
+                return
+            try:
+                new_path.mkdir()
+                self._refresh_list(self._current_path, select=new_path)
+                self.notify(f"폴더 생성: {name}", timeout=2)
+            except Exception as e:
+                self.notify(f"폴더 생성 오류: {e}", severity="error")
+
+        self.push_screen(InputScreen("새 폴더 이름"), do_create)
 
     def action_cycle_focus(self) -> None:
         focused = self.focused

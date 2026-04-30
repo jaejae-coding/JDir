@@ -314,14 +314,17 @@ class JDir(App):
     """
 
     BINDINGS = [
-        Binding("tab",    "cycle_focus",       "탭이동",   show=True,  priority=True),
-        Binding("ctrl+a", "select_all",        "모두선택", show=True,  priority=True),
-        Binding("ctrl+c", "copy_items",        "복사",     show=True,  priority=True),
-        Binding("ctrl+x", "cut_items",         "잘라내기", show=True,  priority=True),
-        Binding("ctrl+p", "paste_items",       "붙여넣기", show=True,  priority=True),
-        Binding("ctrl+d", "delete_items",      "삭제",     show=True,  priority=True),
-        Binding("ctrl+r", "focus_start_input", "시작폴더", show=False),
-        Binding("escape", "quit_confirm",       "종료"),
+        Binding("tab",       "cycle_focus",       "탭이동",   show=True,  priority=True),
+        Binding("ctrl+a",    "select_all",        "모두선택", show=True,  priority=True),
+        Binding("ctrl+c",    "copy_items",        "복사",     show=True,  priority=True),
+        Binding("ctrl+x",    "cut_items",         "잘라내기", show=True,  priority=True),
+        Binding("ctrl+p",    "paste_items",       "붙여넣기", show=True,  priority=True),
+        Binding("ctrl+d",    "delete_items",      "삭제",     show=True,  priority=True),
+        Binding("ctrl+z",    "undo",              "취소",     show=True,  priority=True),
+        Binding("alt+left",  "nav_back",          "뒤로",     show=True),
+        Binding("alt+right", "nav_forward",       "앞으로",   show=True),
+        Binding("ctrl+r",    "focus_start_input", "시작폴더", show=False),
+        Binding("escape",    "quit_confirm",      "종료"),
     ]
 
     def __init__(self, launch_cwd: Path) -> None:
@@ -339,6 +342,9 @@ class JDir(App):
         self._shift_anchor_idx: int | None = None
         self._shift_baseline: dict[Path, bool] = {}
         self._shift_modified: set[Path] = set()
+        self._nav_history: list[Path | None] = []
+        self._nav_index: int = -1
+        self._undo_stack: list[dict] = []
 
     def compose(self) -> ComposeResult:
         saved = load_saved_start()
@@ -354,6 +360,7 @@ class JDir(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self._push_nav(self._current_path)
         self._refresh_list(self._current_path)
         self.query_one(EntryListView).focus()
 
@@ -366,6 +373,13 @@ class JDir(App):
         if isinstance(item, EntryItem) and item.entry_path and item.kind not in ('parent', 'drive'):
             return [item.entry_path]
         return []
+
+    def _push_nav(self, path: Path | None) -> None:
+        self._nav_history = self._nav_history[:self._nav_index + 1]
+        if self._nav_history and self._nav_history[-1] == path:
+            return
+        self._nav_history.append(path)
+        self._nav_index = len(self._nav_history) - 1
 
     def _reset_shift_session(self) -> None:
         self._shift_anchor_idx = None
@@ -464,6 +478,7 @@ class JDir(App):
     def navigate_to(self, path: Path | None) -> None:
         self._selected_paths.clear()
         self._reset_shift_session()
+        self._push_nav(path)
         self._current_path = path
         self._refresh_list(path)
 
@@ -475,12 +490,14 @@ class JDir(App):
             prev = self._current_path
             self._selected_paths.clear()
             self._reset_shift_session()
+            self._push_nav(parent)
             self._current_path = parent
             self._refresh_list(parent, select=prev)
         else:
             prev = self._current_path
             self._selected_paths.clear()
             self._reset_shift_session()
+            self._push_nav(None)
             self._current_path = None
             self._refresh_list(None, select=prev)
 
@@ -602,22 +619,33 @@ class JDir(App):
             return
         self._reset_shift_session()
         errors = []
+        created: list[tuple[Path, Path]] = []
+        paste_mode = self._clipboard_mode
         for src in self._clipboard_paths:
             dst = self._current_path / src.name
             try:
                 if dst.exists():
                     dst = self._current_path / (src.stem + "_copy" + src.suffix)
-                if self._clipboard_mode == 'copy':
+                if paste_mode == 'copy':
                     if src.is_dir():
                         shutil.copytree(str(src), str(dst))
                     else:
                         shutil.copy2(str(src), str(dst))
                 else:
                     shutil.move(str(src), str(dst))
+                created.append((src, dst))
             except Exception as e:
                 errors.append(f"{src.name}: {e}")
 
-        if self._clipboard_mode == 'cut':
+        if created:
+            self._undo_stack.append({
+                'type': 'paste',
+                'mode': paste_mode,
+                'folder': self._current_path,
+                'items': created,
+            })
+
+        if paste_mode == 'cut':
             self._clipboard_paths = []
             self._clipboard_mode = None
             self._cancel_countdown()
@@ -632,6 +660,62 @@ class JDir(App):
             self.notify("오류: " + " / ".join(errors), severity="error", timeout=5)
         else:
             self.notify("붙여넣기 완료", timeout=2)
+
+    def action_nav_back(self) -> None:
+        if self._nav_index <= 0:
+            return
+        self._nav_index -= 1
+        path = self._nav_history[self._nav_index]
+        self._selected_paths.clear()
+        self._reset_shift_session()
+        self._current_path = path
+        self._refresh_list(path)
+
+    def action_nav_forward(self) -> None:
+        if self._nav_index >= len(self._nav_history) - 1:
+            return
+        self._nav_index += 1
+        path = self._nav_history[self._nav_index]
+        self._selected_paths.clear()
+        self._reset_shift_session()
+        self._current_path = path
+        self._refresh_list(path)
+
+    def action_undo(self) -> None:
+        if not self._undo_stack:
+            self.notify("되돌릴 작업이 없습니다.", timeout=2)
+            return
+        op = self._undo_stack.pop()
+        errors = []
+        if op['mode'] == 'copy':
+            for _src, dst in op['items']:
+                try:
+                    if dst.is_dir():
+                        shutil.rmtree(str(dst))
+                    elif dst.exists():
+                        os.remove(str(dst))
+                except Exception as e:
+                    errors.append(f"{dst.name}: {e}")
+        else:
+            for src, dst in op['items']:
+                try:
+                    shutil.move(str(dst), str(src))
+                except Exception as e:
+                    errors.append(f"{dst.name}: {e}")
+
+        folder = op['folder']
+        if folder and folder.is_dir():
+            self._selected_paths.clear()
+            self._reset_shift_session()
+            self._push_nav(folder)
+            self._current_path = folder
+            self._refresh_list(folder)
+
+        if errors:
+            self.notify("취소 오류: " + " / ".join(errors), severity="error", timeout=5)
+        else:
+            mode_str = "복사" if op['mode'] == 'copy' else "이동"
+            self.notify(f"{mode_str} 취소 완료", timeout=2)
 
     def action_delete_items(self) -> None:
         paths = self._get_active_paths()
@@ -696,6 +780,8 @@ class JDir(App):
             clear_saved_start()
             self._current_path = self.launch_cwd
         self._selected_paths.clear()
+        self._reset_shift_session()
+        self._push_nav(self._current_path)
         self._refresh_list(self._current_path)
         self.query_one(EntryListView).focus()
         self.notify(f"이동: {self._current_path.name or str(self._current_path)}", timeout=2)

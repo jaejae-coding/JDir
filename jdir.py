@@ -15,9 +15,25 @@ LAUNCH_CWD = Path(os.getcwd())
 CONFIG_FILE = Path.home() / ".claude" / "jdir_config.json"
 
 EXEC_EXTENSIONS = frozenset({'.exe', '.bat', '.cmd', '.msi', '.com', '.ps1', '.py'})
-DOC_EXTENSIONS  = frozenset({'.doc', '.docx', '.ppt', '.pptx', '.txt', '.csv', '.md'})
+DOC_EXTENSIONS  = frozenset({'.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                              '.hwp', '.hwpx', '.pdf', '.rtf', '.txt', '.csv', '.md'})
 
-_FOCUS_CYCLE = ["entry-list", "claude-btn", "start-input", "move-btn"]
+_FOCUS_CYCLE = ["entry-list", "prompt-input", "claude-btn", "start-input", "move-btn",
+                "show-hidden-cb", "show-temp-cb"]
+
+_CREATE_NEW_CONSOLE = 0x00000010
+
+def _is_hidden_or_system(path: Path) -> bool:
+    try:
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+        if attrs == 0xFFFFFFFF:
+            return False
+        return bool(attrs & 0x6)  # HIDDEN=0x2 | SYSTEM=0x4
+    except Exception:
+        return False
+
+def _is_temp_file(path: Path) -> bool:
+    return path.name.startswith('~$') or path.suffix.lower() in ('.tmp', '.temp')
 
 
 def get_drives() -> list[Path]:
@@ -55,7 +71,7 @@ def clear_saved_start() -> None:
 
 from rich.markup import escape as rich_escape
 from textual.app import App, ComposeResult
-from textual.widgets import ListView, ListItem, Label, Header, Footer, Input, Button, Static
+from textual.widgets import ListView, ListItem, Label, Header, Footer, Input, Button, Static, Checkbox
 from textual.containers import Horizontal, Grid
 from textual.binding import Binding
 from textual.screen import ModalScreen
@@ -323,7 +339,7 @@ class EntryListView(ListView):
 
 class JDir(App):
     TITLE = "JDir"
-    SUB_TITLE = "v0.5 (20260430)  ·  by JaeJae"
+    SUB_TITLE = "v0.6 (20260430)  ·  by JaeJae"
 
     CSS = """
     #top-bar {
@@ -344,13 +360,34 @@ class JDir(App):
         width: 5;
         margin-left: 1;
     }
-    #current-path-bar {
-        height: 2;
-        padding: 0 2;
+    #prompt-bar {
+        height: 3;
         background: $boost;
         border-bottom: solid $accent;
+        align: left middle;
+        padding: 0 1;
+    }
+    #prompt-prefix {
         color: $accent;
+        width: auto;
         content-align: left middle;
+        padding: 0 1;
+    }
+    #prompt-input {
+        width: 1fr;
+        border: none;
+        background: $boost;
+    }
+    #filter-bar {
+        height: 3;
+        padding: 0 2;
+        background: $panel;
+        border-top: solid $primary;
+        align: left middle;
+    }
+    #filter-bar Checkbox {
+        margin-right: 3;
+        background: $panel;
     }
     EntryListView {
         height: 1fr;
@@ -388,6 +425,7 @@ class JDir(App):
         Binding("ctrl+z",    "undo",              "취소",     show=True,  priority=True),
         Binding("f2",        "rename",            "이름변경", show=True),
         Binding("ctrl+n",    "new_folder",        "새폴더",   show=True),
+        Binding("f5",        "refresh",           "새로고침", show=True),
         Binding("alt+left",  "nav_back",          "뒤로",     show=True),
         Binding("alt+right", "nav_forward",       "앞으로",   show=True),
         Binding("ctrl+r",    "focus_start_input", "시작폴더", show=False),
@@ -412,6 +450,8 @@ class JDir(App):
         self._nav_history: list[Path | None] = []
         self._nav_index: int = -1
         self._undo_stack: list[dict] = []
+        self._show_hidden: bool = False
+        self._show_temp: bool = False
 
     def compose(self) -> ComposeResult:
         saved = load_saved_start()
@@ -421,9 +461,14 @@ class JDir(App):
             yield Button("Claude 실행", id="claude-btn", variant="success")
             yield Input(value=saved or "", id="start-input", placeholder=placeholder)
             yield Button("이동", id="move-btn", variant="primary")
-        yield Static("", id="current-path-bar")
+        with Horizontal(id="prompt-bar"):
+            yield Static("PS > ", id="prompt-prefix")
+            yield Input(placeholder="Enter: 새 PowerShell  |  명령어 입력 후 Enter: 명령 실행", id="prompt-input")
         yield EntryListView(id="entry-list")
         yield Static("클립보드: (없음)", id="clipboard-bar")
+        with Horizontal(id="filter-bar"):
+            yield Checkbox("숨김파일 표시", id="show-hidden-cb", value=False)
+            yield Checkbox("임시파일 표시", id="show-temp-cb", value=False)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -491,20 +536,23 @@ class JDir(App):
 
     def _refresh_list(self, path: Path | None, select: Path | None = None) -> None:
         lv = self.query_one(EntryListView)
-        path_bar = self.query_one("#current-path-bar", Static)
         lv.clear()
+
+        # 프롬프트 접두사 업데이트
+        try:
+            path_str = str(path) if path else "내 PC"
+            self.query_one("#prompt-prefix", Static).update(f"PS {path_str}> ")
+        except Exception:
+            pass
 
         entries_meta: list[tuple[Path | None, str]] = []
         cut_set = set(self._clipboard_paths) if self._clipboard_mode == 'cut' else set()
 
         if path is None:
-            path_bar.update("  [내 PC]")
             for drive in get_drives():
                 lv.append(EntryItem(drive, str(drive), 'drive'))
                 entries_meta.append((drive, 'drive'))
         else:
-            path_bar.update(f"  {path}")
-
             if path.parent != path:
                 parent_label = f".. ({path.parent.name or str(path.parent)})"
                 lv.append(EntryItem(path.parent, parent_label, 'parent'))
@@ -517,6 +565,11 @@ class JDir(App):
                 raw = list(path.iterdir())
             except (PermissionError, OSError):
                 raw = []
+
+            if not self._show_hidden:
+                raw = [p for p in raw if not _is_hidden_or_system(p)]
+            if not self._show_temp:
+                raw = [p for p in raw if not _is_temp_file(p)]
 
             folders = sorted([p for p in raw if p.is_dir()], key=lambda x: x.name.lower())
             execs   = sorted([p for p in raw if p.is_file() and p.suffix.lower() in EXEC_EXTENSIONS], key=lambda x: x.name.lower())
@@ -907,6 +960,13 @@ class JDir(App):
     def on_start_submitted(self) -> None:
         self._apply_start()
 
+    @on(Input.Submitted, "#prompt-input")
+    def on_prompt_submitted(self) -> None:
+        inp = self.query_one("#prompt-input", Input)
+        command = inp.value.strip()
+        inp.value = ""
+        self._launch_pwsh(command)
+
     @on(Button.Pressed, "#move-btn")
     def on_move_btn(self) -> None:
         self._apply_start()
@@ -914,6 +974,31 @@ class JDir(App):
     @on(Button.Pressed, "#claude-btn")
     def on_claude_btn(self) -> None:
         self._launch_claude()
+
+    @on(Checkbox.Changed, "#show-hidden-cb")
+    def on_show_hidden_changed(self, event: Checkbox.Changed) -> None:
+        self._show_hidden = event.value
+        self._refresh_list(self._current_path)
+
+    @on(Checkbox.Changed, "#show-temp-cb")
+    def on_show_temp_changed(self, event: Checkbox.Changed) -> None:
+        self._show_temp = event.value
+        self._refresh_list(self._current_path)
+
+    def _launch_pwsh(self, command: str = "") -> None:
+        cwd = str(self._current_path) if self._current_path else str(Path.home())
+        for exe in ("pwsh", "powershell"):
+            try:
+                args = [exe, "-NoExit"] + (["-Command", command] if command else [])
+                subprocess.Popen(args, cwd=cwd, creationflags=_CREATE_NEW_CONSOLE)
+                return
+            except FileNotFoundError:
+                continue
+        self.notify("PowerShell을 찾을 수 없습니다.", severity="error")
+
+    def action_refresh(self) -> None:
+        self._refresh_list(self._current_path)
+        self.notify("새로고침", timeout=1)
 
     def action_focus_start_input(self) -> None:
         self.query_one("#start-input", Input).focus()

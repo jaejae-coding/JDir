@@ -218,9 +218,12 @@ class EntryItem(ListItem):
 
 class EntryListView(ListView):
     BINDINGS = [
-        Binding("enter", "activate",   "열기/이동", show=False),
-        Binding("right", "enter_item", "하위폴더",  show=False),
-        Binding("left",  "go_top",     "최상단",    show=False),
+        Binding("enter",      "activate",          "열기/이동", show=False),
+        Binding("right",      "enter_item",        "하위폴더",  show=False),
+        Binding("left",       "go_top",            "최상단",    show=False),
+        Binding("space",      "toggle_select",     "선택",      show=False),
+        Binding("shift+down", "shift_select_down", "범위선택",  show=False),
+        Binding("shift+up",   "shift_select_up",   "범위선택",  show=False),
     ]
 
     def action_activate(self) -> None:
@@ -237,6 +240,23 @@ class EntryListView(ListView):
             self.app.go_up()
         else:
             self.index = 0
+
+    def action_cursor_up(self) -> None:
+        self.app._reset_shift_session()
+        super().action_cursor_up()
+
+    def action_cursor_down(self) -> None:
+        self.app._reset_shift_session()
+        super().action_cursor_down()
+
+    def action_toggle_select(self) -> None:
+        self.app.toggle_select_current()
+
+    def action_shift_select_down(self) -> None:
+        self.app.shift_select(1)
+
+    def action_shift_select_up(self) -> None:
+        self.app.shift_select(-1)
 
 
 class JDir(App):
@@ -316,6 +336,7 @@ class JDir(App):
         self._clipboard_mode: Literal['copy', 'cut'] | None = None
         self._countdown_handle = None
         self._clipboard_countdown: int = 0
+        self._shift_toggled: set[Path] = set()
 
     def compose(self) -> ComposeResult:
         saved = load_saved_start()
@@ -344,6 +365,9 @@ class JDir(App):
             return [item.entry_path]
         return []
 
+    def _reset_shift_session(self) -> None:
+        self._shift_toggled.clear()
+
     def _cancel_countdown(self) -> None:
         if self._countdown_handle is not None:
             self._countdown_handle.stop()
@@ -368,15 +392,17 @@ class JDir(App):
 
     def _update_clipboard_bar(self) -> None:
         bar = self.query_one("#clipboard-bar", Static)
-        if not self._clipboard_paths:
-            bar.update("클립보드: (없음)")
-            return
-        mode_str = "복사" if self._clipboard_mode == 'copy' else "잘라내기"
-        names = ", ".join(p.name for p in self._clipboard_paths[:3])
-        if len(self._clipboard_paths) > 3:
-            names += f" 외 {len(self._clipboard_paths) - 3}개"
-        countdown_str = f" ({self._clipboard_countdown}초 후 삭제)" if self._clipboard_countdown > 0 else ""
-        bar.update(f"클립보드 [{mode_str}]: {names}{countdown_str}")
+        parts = []
+        if self._selected_paths:
+            parts.append(f"{len(self._selected_paths)}개 선택")
+        if self._clipboard_paths:
+            mode_str = "복사" if self._clipboard_mode == 'copy' else "잘라내기"
+            names = ", ".join(p.name for p in self._clipboard_paths[:3])
+            if len(self._clipboard_paths) > 3:
+                names += f" 외 {len(self._clipboard_paths) - 3}개"
+            countdown_str = f" ({self._clipboard_countdown}초 후 삭제)" if self._clipboard_countdown > 0 else ""
+            parts.append(f"클립보드 [{mode_str}]: {names}{countdown_str}")
+        bar.update("  |  ".join(parts) if parts else "클립보드: (없음)")
 
     def _refresh_list(self, path: Path | None, select: Path | None = None) -> None:
         lv = self.query_one(EntryListView)
@@ -433,6 +459,7 @@ class JDir(App):
 
     def navigate_to(self, path: Path | None) -> None:
         self._selected_paths.clear()
+        self._reset_shift_session()
         self._current_path = path
         self._refresh_list(path)
 
@@ -443,11 +470,13 @@ class JDir(App):
         if parent != self._current_path:
             prev = self._current_path
             self._selected_paths.clear()
+            self._reset_shift_session()
             self._current_path = parent
             self._refresh_list(parent, select=prev)
         else:
             prev = self._current_path
             self._selected_paths.clear()
+            self._reset_shift_session()
             self._current_path = None
             self._refresh_list(None, select=prev)
 
@@ -471,11 +500,55 @@ class JDir(App):
             return
         lv = self.query_one(EntryListView)
         self._selected_paths.clear()
+        self._reset_shift_session()
         for child in lv.children:
             if isinstance(child, EntryItem) and child.entry_path and child.kind not in ('parent', 'drive'):
                 self._selected_paths.add(child.entry_path)
         self._refresh_list(self._current_path)
+        self._update_clipboard_bar()
         self.notify(f"{len(self._selected_paths)}개 선택됨", timeout=1)
+
+    def toggle_select_current(self) -> None:
+        self._reset_shift_session()
+        lv = self.query_one(EntryListView)
+        item = lv.highlighted_child
+        if not (isinstance(item, EntryItem) and item.entry_path and item.kind not in ('parent', 'drive')):
+            return
+        self._selected_paths ^= {item.entry_path}
+        self._refresh_list(self._current_path, select=item.entry_path)
+        self._update_clipboard_bar()
+
+    def shift_select(self, direction: int) -> None:
+        lv = self.query_one(EntryListView)
+        if lv.index is None:
+            return
+        children = list(lv.children)
+        current_idx = lv.index
+        current_item = lv.highlighted_child
+
+        def _toggle_if_new(item: EntryItem) -> None:
+            if item.entry_path and item.kind not in ('parent', 'drive'):
+                if item.entry_path not in self._shift_toggled:
+                    self._selected_paths ^= {item.entry_path}
+                    self._shift_toggled.add(item.entry_path)
+
+        if isinstance(current_item, EntryItem):
+            _toggle_if_new(current_item)
+
+        new_idx = current_idx + direction
+        if not (0 <= new_idx < len(children)):
+            select_path = current_item.entry_path if isinstance(current_item, EntryItem) else None
+            self._refresh_list(self._current_path, select=select_path)
+            self._update_clipboard_bar()
+            return
+
+        new_item = children[new_idx]
+        if isinstance(new_item, EntryItem):
+            _toggle_if_new(new_item)
+
+        select_path = new_item.entry_path if isinstance(new_item, EntryItem) else None
+        self._refresh_list(self._current_path, select=select_path)
+        self._update_clipboard_bar()
 
     def action_copy_items(self) -> None:
         paths = self._get_active_paths()
@@ -616,7 +689,16 @@ class JDir(App):
         self.query_one("#start-input", Input).focus()
 
     def action_quit_confirm(self) -> None:
-        if self._clipboard_paths:
+        if self._selected_paths:
+            self._selected_paths.clear()
+            self._reset_shift_session()
+            self._cancel_countdown()
+            self._clipboard_paths = []
+            self._clipboard_mode = None
+            self._update_clipboard_bar()
+            self._refresh_list(self._current_path)
+            self.notify("선택 해제", timeout=1)
+        elif self._clipboard_paths:
             self._cancel_countdown()
             self._clipboard_paths = []
             self._clipboard_mode = None

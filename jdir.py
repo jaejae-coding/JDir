@@ -336,7 +336,9 @@ class JDir(App):
         self._clipboard_mode: Literal['copy', 'cut'] | None = None
         self._countdown_handle = None
         self._clipboard_countdown: int = 0
-        self._shift_toggled: set[Path] = set()
+        self._shift_anchor_idx: int | None = None
+        self._shift_baseline: dict[Path, bool] = {}
+        self._shift_modified: set[Path] = set()
 
     def compose(self) -> ComposeResult:
         saved = load_saved_start()
@@ -366,7 +368,9 @@ class JDir(App):
         return []
 
     def _reset_shift_session(self) -> None:
-        self._shift_toggled.clear()
+        self._shift_anchor_idx = None
+        self._shift_baseline.clear()
+        self._shift_modified.clear()
 
     def _cancel_countdown(self) -> None:
         if self._countdown_handle is not None:
@@ -524,28 +528,47 @@ class JDir(App):
             return
         children = list(lv.children)
         current_idx = lv.index
-        current_item = lv.highlighted_child
-
-        def _toggle_if_new(item: EntryItem) -> None:
-            if item.entry_path and item.kind not in ('parent', 'drive'):
-                if item.entry_path not in self._shift_toggled:
-                    self._selected_paths ^= {item.entry_path}
-                    self._shift_toggled.add(item.entry_path)
-
-        if isinstance(current_item, EntryItem):
-            _toggle_if_new(current_item)
-
         new_idx = current_idx + direction
         if not (0 <= new_idx < len(children)):
-            select_path = current_item.entry_path if isinstance(current_item, EntryItem) else None
-            self._refresh_list(self._current_path, select=select_path)
-            self._update_clipboard_bar()
             return
 
-        new_item = children[new_idx]
-        if isinstance(new_item, EntryItem):
-            _toggle_if_new(new_item)
+        # 세션 시작: 앵커와 베이스라인 스냅샷 저장
+        if self._shift_anchor_idx is None:
+            self._shift_anchor_idx = current_idx
+            self._shift_baseline = {
+                child.entry_path: (child.entry_path in self._selected_paths)
+                for child in children
+                if isinstance(child, EntryItem) and child.entry_path
+                and child.kind not in ('parent', 'drive')
+            }
 
+        anchor = self._shift_anchor_idx
+        lo, hi = min(anchor, new_idx), max(anchor, new_idx)
+
+        # 새 범위에 포함된 selectable 항목 집합
+        new_modified: set[Path] = set()
+        for i in range(lo, hi + 1):
+            item = children[i]
+            if isinstance(item, EntryItem) and item.entry_path and item.kind not in ('parent', 'drive'):
+                new_modified.add(item.entry_path)
+
+        # 새로 범위에 들어온 항목: 베이스라인 반전
+        for path in new_modified - self._shift_modified:
+            if self._shift_baseline.get(path, False):
+                self._selected_paths.discard(path)
+            else:
+                self._selected_paths.add(path)
+
+        # 범위에서 빠진 항목: 베이스라인으로 복원
+        for path in self._shift_modified - new_modified:
+            if self._shift_baseline.get(path, False):
+                self._selected_paths.add(path)
+            else:
+                self._selected_paths.discard(path)
+
+        self._shift_modified = new_modified
+
+        new_item = children[new_idx]
         select_path = new_item.entry_path if isinstance(new_item, EntryItem) else None
         self._refresh_list(self._current_path, select=select_path)
         self._update_clipboard_bar()
@@ -554,6 +577,7 @@ class JDir(App):
         paths = self._get_active_paths()
         if not paths:
             return
+        self._reset_shift_session()
         self._cancel_countdown()
         self._clipboard_paths = paths
         self._clipboard_mode = 'copy'
@@ -565,6 +589,7 @@ class JDir(App):
         paths = self._get_active_paths()
         if not paths:
             return
+        self._reset_shift_session()
         self._cancel_countdown()
         self._clipboard_paths = paths
         self._clipboard_mode = 'cut'
@@ -575,6 +600,7 @@ class JDir(App):
     def action_paste_items(self) -> None:
         if not self._clipboard_paths or self._current_path is None:
             return
+        self._reset_shift_session()
         errors = []
         for src in self._clipboard_paths:
             dst = self._current_path / src.name
@@ -611,6 +637,7 @@ class JDir(App):
         paths = self._get_active_paths()
         if not paths:
             return
+        self._reset_shift_session()
         names = ", ".join(p.name for p in paths[:2])
         if len(paths) > 2:
             names += f" 외 {len(paths) - 2}개"

@@ -261,7 +261,7 @@ class EntryListView(ListView):
 
 class JDir(App):
     TITLE = "JDir"
-    SUB_TITLE = "v0.3 (20260429)  ·  by JaeJae"
+    SUB_TITLE = "v0.4 (20260430)  ·  by JaeJae"
 
     CSS = """
     #top-bar {

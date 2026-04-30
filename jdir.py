@@ -379,15 +379,25 @@ class JDir(App):
         background: $boost;
     }
     #filter-bar {
-        height: 3;
-        padding: 0 2;
+        height: 1;
+        padding: 0 1;
         background: $panel;
-        border-top: solid $primary;
-        align: left middle;
+        align: right middle;
     }
     #filter-bar Checkbox {
-        margin-right: 3;
+        border: none;
         background: $panel;
+        height: 1;
+        padding: 0 1;
+        margin: 0;
+    }
+    #filter-bar Checkbox:focus {
+        border: none;
+        background: $panel;
+        text-style: bold;
+    }
+    Footer {
+        height: 2;
     }
     EntryListView {
         height: 1fr;
